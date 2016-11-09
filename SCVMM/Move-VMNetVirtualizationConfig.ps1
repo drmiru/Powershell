@@ -22,7 +22,7 @@ Function Move-VMNetVirtualizationConfig
     .NOTES
     Author: Michael Rueefli
     Version: 1.0 (stable)
-    Changes:
+    
     #>
     
     [CmdletBinding()]
