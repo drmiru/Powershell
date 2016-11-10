@@ -43,7 +43,7 @@ Function Move-VMNetVirtualizationConfig
     If (!$VMnet)
     {
         Write-Warning "No Gateway Device found matching name: $VMNetworkName , aborting"
-        brake
+        break
     }
     Write-Verbose "VM Network: $VMNet"
 
@@ -52,7 +52,7 @@ Function Move-VMNetVirtualizationConfig
     If (!$OldVMnetGW)
     {
         Write-Warning "VM Network: $VMNetworkName , seems not to be a virtualized VMNetwork, aborting"
-        brake
+        break
     }
     Write-Verbose "Existing VM GW: $OldVMnetGW"
 
@@ -79,7 +79,7 @@ Function Move-VMNetVirtualizationConfig
     If (!$NewNetGWSvc)
     {
         Write-Warning "No Gateway Device found matching name: $NewGatewayName , aborting"
-        brake
+        break
     }
 
     #Remove current configuration
