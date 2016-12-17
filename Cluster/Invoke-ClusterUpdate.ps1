@@ -84,10 +84,12 @@ param(
     [Int]$MaxLogSizeInKB = 10240
 )
 
-#Globals
+#region Globals
 $ErrorActionPreference = "stop"
 $Global:ScriptName = $MyInvocation.MyCommand.name
+#endregion Globals
 
+#region functions
 function New-LogEntry
 {
   #Full credits for this adapted function to: Russ Slaten (MSFT)
@@ -107,12 +109,12 @@ function New-LogEntry
   {
       if (($type -eq "Verbose") -and ($VerbosePreference -eq "Continue"))
       {
-        $toLog = "{0} `$$<{1}><{2} {3}><thread={4}>" -f ($type + ":" + $message), ($Global:ScriptName + ":" + $component), (Get-Date -Format "MM-dd-yyyy"), (Get-Date -Format "HH:mm:ss.ffffff"), $pid
+        $toLog = "{0} `$$<{1}><{2} {3}><thread={4}>" -f ($type + ":" + $message), ($ScriptName + ":" + $component), (Get-Date -Format "MM-dd-yyyy"), (Get-Date -Format "HH:mm:ss.ffffff"), $pid
         $toLog | Out-File -Append -Encoding UTF8 -FilePath ("filesystem::{0}" -f $LogFile)
       }
       Else
       {
-        $toLog = "{0} `$$<{1}><{2} {3}><thread={4}>" -f ($type + ":" + $message), ($Global:ScriptName + ":" + $component), (Get-Date -Format "MM-dd-yyyy"), (Get-Date -Format "HH:mm:ss.ffffff"), $pid
+        $toLog = "{0} `$$<{1}><{2} {3}><thread={4}>" -f ($type + ":" + $message), ($ScriptName + ":" + $component), (Get-Date -Format "MM-dd-yyyy"), (Get-Date -Format "HH:mm:ss.ffffff"), $pid
         $toLog | Out-File -Append -Encoding UTF8 -FilePath ("filesystem::{0}" -f $LogFile)
       }
 
@@ -128,77 +130,6 @@ function New-LogEntry
     Write-Warning "Could not log to File: $($_.InvocationInfo.myCommand.Name): $($_.Exception.Message)"
   }
 } 
-
-
-#Checking CMDLETs
-If (!(Get-WindowsFeature RSAT-Clustering-PowerShell))
-{
-    New-LogEntry -message ("Failover Clustering Module not present, install it first 'Add-WindowsFeature RSAT-Clustering-PowerShell'") -component "PreProcessing()" -type Error
-    Write-Error "Failover Clustering Module not present, install it first 'Add-WindowsFeature RSAT-Clustering-PowerShell'"
-}
-
-New-LogEntry -message ("Cluster Update Started") -component "PreProcessing()" -type Info
-If ($GlobalPreScript)
-{
-    Try
-    {
-        New-LogEntry -message ("Invoking Global Prescript: $GlobalPreScript") -component "PreProcessing()" -type Info
-        Start-Process Powershell.exe -ArgumentList "-command $GlobalPreScript" -NoNewWindow -Wait
-    }
-    Catch
-    {
-        Write-Warning "Error executing Global Prescript: $GlobalPreScript"
-    }
-}
-
-
-#Get Clusternodes
-New-LogEntry -message ("Getting Cluster Nodes of Cluster: $ClusterName") -component "Main()" -type Info
-Try
-{
-    $ClusterNodeObjects = Get-ClusterNode -Cluster $ClusterName
-}
-Catch
-{
-    New-LogEntry -message ("Error while getting Clusternodes from Cluster: $ClusterName : $($_.InvocationInfo.myCommand.Name): $($_.Exception.Message)") -component "Main()" -type Error
-    throw "Error while getting Clusternodes from Cluster: $ClusterName : $($_.InvocationInfo.myCommand.Name): $($_.Exception.Message)"
-}
-
-$NodeCount = $ClusterNodeObjects.count
-New-LogEntry -message ("Nodes found: $NodeCount") -component "Main()" -type Info
-
-#Trying to connect to each Node using CIM
-Foreach ($node in $ClusterNodeObjects)
-{
-    Try
-    {
-        $s = New-CimSession -ComputerName $node.name
-        New-LogEntry -message ("Successfully Connected to Node: $($Node.Name) via CIM") -component "Main()" -type Info
-        Write-Verbose "Successfully Connected to Node: $($Node.Name)"
-    }
-    Catch
-    {
-        New-LogEntry -message ("Error connecting Node: $($Node.Name) via CIM : $($_.InvocationInfo.myCommand.Name): $($_.Exception.Message)") -component "Main()" -type Error
-        throw "Error connecting to Node: $($Node.Name) via CIM : $($_.InvocationInfo.myCommand.Name): $($_.Exception.Message)"
-    } 
-    Finally
-    {
-        If ($s)
-        {
-            $s | Remove-CimSession
-        }
-    }  
-}
-
-#Search for nodes not ready
-New-LogEntry -message ("Searching For Nodes not up") -component "Main()" -type Info
-$ClusterNodesNotReady = $ClusterNodeObjects | where {$_.State -ne 'up'}
-If ($ClusterNodesNotReady)
-{
-    New-LogEntry -message ("Found $($ClusterNodesNotReady.Count) nodes not in UP state, aborting") -component "Main()" -type Error
-    throw "Not all Nodes seem to be online, aborting"
-}
-
 
 Function Test-StorageHealth
 {
@@ -348,8 +279,79 @@ Function Invoke-WSUSUpdate
     }
 
 }
+#endregion functions
 
-#region ####### Main routine #######
+#region main()
+
+#Checking CMDLETs
+If (!(Get-WindowsFeature RSAT-Clustering-PowerShell))
+{
+    New-LogEntry -message ("Failover Clustering Module not present, install it first 'Add-WindowsFeature RSAT-Clustering-PowerShell'") -component "PreProcessing()" -type Error
+    Write-Error "Failover Clustering Module not present, install it first 'Add-WindowsFeature RSAT-Clustering-PowerShell'"
+}
+
+New-LogEntry -message ("Cluster Update Started") -component "PreProcessing()" -type Info
+If ($GlobalPreScript)
+{
+    Try
+    {
+        New-LogEntry -message ("Invoking Global Prescript: $GlobalPreScript") -component "PreProcessing()" -type Info
+        Start-Process Powershell.exe -ArgumentList "-command $GlobalPreScript" -NoNewWindow -Wait
+    }
+    Catch
+    {
+        Write-Warning "Error executing Global Prescript: $GlobalPreScript"
+    }
+}
+
+
+#Get Clusternodes
+New-LogEntry -message ("Getting Cluster Nodes of Cluster: $ClusterName") -component "Main()" -type Info
+Try
+{
+    $ClusterNodeObjects = Get-ClusterNode -Cluster $ClusterName
+}
+Catch
+{
+    New-LogEntry -message ("Error while getting Clusternodes from Cluster: $ClusterName : $($_.InvocationInfo.myCommand.Name): $($_.Exception.Message)") -component "Main()" -type Error
+    throw "Error while getting Clusternodes from Cluster: $ClusterName : $($_.InvocationInfo.myCommand.Name): $($_.Exception.Message)"
+}
+
+$NodeCount = $ClusterNodeObjects.count
+New-LogEntry -message ("Nodes found: $NodeCount") -component "Main()" -type Info
+
+#Trying to connect to each Node using CIM
+Foreach ($node in $ClusterNodeObjects)
+{
+    Try
+    {
+        $s = New-CimSession -ComputerName $node.name
+        New-LogEntry -message ("Successfully Connected to Node: $($Node.Name) via CIM") -component "Main()" -type Info
+        Write-Verbose "Successfully Connected to Node: $($Node.Name)"
+    }
+    Catch
+    {
+        New-LogEntry -message ("Error connecting Node: $($Node.Name) via CIM : $($_.InvocationInfo.myCommand.Name): $($_.Exception.Message)") -component "Main()" -type Error
+        throw "Error connecting to Node: $($Node.Name) via CIM : $($_.InvocationInfo.myCommand.Name): $($_.Exception.Message)"
+    } 
+    Finally
+    {
+        If ($s)
+        {
+            $s | Remove-CimSession
+        }
+    }  
+}
+
+#Search for nodes not ready
+New-LogEntry -message ("Searching For Nodes not up") -component "Main()" -type Info
+$ClusterNodesNotReady = $ClusterNodeObjects | where {$_.State -ne 'up'}
+If ($ClusterNodesNotReady)
+{
+    New-LogEntry -message ("Found $($ClusterNodesNotReady.Count) nodes not in UP state, aborting") -component "Main()" -type Error
+    throw "Not all Nodes seem to be online, aborting"
+}
+
 
 #Check Storage Health
 $StorageHealth = Test-StorageHealth -NodeName ($ClusterNodeObjects)[0].Name
@@ -372,6 +374,8 @@ Foreach ($node in $ClusterNodeObjects)
 {
     $NodeName = $node.name
     #Executing Node-PreScript
+    New-LogEntry -message ("Starting Node Post-Script $NodePreScript on node: $NodeName") -component "Main()" -type Info
+    Write-Verbose "Starting Node Post-Script $NodePreScript on node: $NodeName"
     Invoke-Command -ComputerName $NodeName -ScriptBlock {
         Start-Process Powershell.exe -ArgumentList "-command $USING:NodePreScript" -NoNewWindow -Wait
     }
@@ -468,13 +472,17 @@ Foreach ($node in $ClusterNodeObjects)
     }
 
     #Start Node Post-Script
+    New-LogEntry -message ("Starting Node Post-Script $NodePostScript on node: $NodeName") -component "Main()" -type Info
+    Write-Verbose "Starting Node Post-Script $NodePostScript on node: $NodeName"
     Invoke-Command -ComputerName $NodeName -ScriptBlock {
         Start-Process Powershell.exe -ArgumentList "-command $Using:NodePostScript" -NoNewWindow -Wait
     }
     
 }
 
-#Start Node Post-Script
+#Start Global Post-Script
+New-LogEntry -message ("Starting Global Post-Script $GlobalPostScript") -component "Main()" -type Info
+Write-Verbose "Starting Node Post-Script $GlobalPostScript"
 Start-Process Powershell.exe -ArgumentList "-command $GlobalPostScript" -NoNewWindow -Wait
 
 
