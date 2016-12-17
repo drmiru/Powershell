@@ -13,10 +13,13 @@
    -Failover Clustering CMDLETs installed on coordinating machine (where you execute the script)
 
 .EXAMPLE
-   Example of how to use this cmdlet
+   .\Invoke-ClusterUpdate.ps1 -ClusterName S2DCL01
 
 .EXAMPLE
-   Another example of how to use this cmdlet
+   .\Invoke-ClusterUpdate.ps1 -ClusterName S2DCL01 -verbose
+
+.EXAMPLE
+   .\Invoke-ClusterUpdate.ps1 -ClusterName S2DCL01 -NodePreScript C:\Scripts\CAUPre.ps1 -NodePostScript C:\Scripts\CAUPost.ps1 -GlobalPreScript E:\Scripts\ClusterUpdate-Pre-Script.ps1 -GlobalPostScript E:\Scripts\ClusterUpdate-Post-Script.ps1
 
 .PARAMETER ClusterName
    Name of Cluster
