@@ -13,8 +13,33 @@ param(
     [bool]$SkipUpdates=$false,
 
     [Parameter(Mandatory=$false)]
-    [bool]$ForceReboot=$false
+    [String]$NodePreScript,
+
+    [Parameter(Mandatory=$false)]
+    [String]$NodePostScript,
+
+    [Parameter(Mandatory=$false)]
+    [String]$GlobalPreScript,
+
+    [Parameter(Mandatory=$false)]
+    [String]$GlobalPostScript
 )
+
+#Error handler
+$ErrorActionPreference = "stop"
+
+If ($GlobalPreScript)
+{
+    Try
+    {
+        Invoke-Item $GlobalPreScript
+    }
+    Catch
+    {
+        Write-Warning "Error executing Global Prescript: $GlobalPreScript"
+    }
+}
+
 
 #Get Clusternodes
 $ClusterNodeObjects = Get-ClusterNode -Cluster $ClusterName
@@ -36,10 +61,7 @@ Function Test-StorageHealth
 {
     param(
         [Parameter(Mandatory=$true)]
-        [string]$NodeName,
-
-        [Parameter(Mandatory=$false)]
-        [bool]$AllowRetry
+        [string]$NodeName
     )
 
         #Checking if S2D / SOFS
@@ -51,34 +73,20 @@ Function Test-StorageHealth
             If ($SubSysHealth -ne 'Healthy')
             {
                 $SubSysNotHealthy = $true
-                If ($AllowRetry -eq $true)
-                {
-                    Write-verbose "Storage Subsystem is not in a healthy state"
-                }
-                Else
-                {
-                    Throw "Storage Subsystem is not in a healthy state, aborting"
-                }
+                Write-Verbose "Storage Subsystem is not in a healthy state"
             }
             
             
             $StoragePools = $StorageSubSystem | Get-StoragePool -IsPrimordial $false
             If ($StoragePools)
             {
-                Write-verbose "Storage Pools found:"
+                Write-verbose "Storage Pools present"
 
                 #Check Storage Pool Health
                 $StoragePoolnotHealthy = $StoragePools | Where-Object {$_.HealthStatus -ne 'Healthy'}
                 If ($StoragePoolnotHealthy)
                 {
-                    If ($AllowRetry -eq $true)
-                    {
-                        Write-verbose "At least one Storage Pool is not in a healthy state"
-                    }
-                    Else
-                    {
-                        Throw "At least one Storage Pool is not in a healthy state, aborting"
-                    }
+                    Write-Verbose "At least one Storage Pool is not in a healthy state"                    
                 }
 
                 #Check Virtual Disk Health
@@ -86,20 +94,12 @@ Function Test-StorageHealth
                 If ($virtualDisksnotHealthy)
                 {
                     Write-Verbose "$virtualDisksnotHealthy"
-                    If ($AllowRetry -eq $true)
-                    {
-                        Write-verbose "At least one virtual Disk is not in a healthy state"
-
-                    }
-                    Else
-                    {
-                        Throw "At least one virtual Disk is not in a healthy state, aborting"
-                    }
+                    Write-Verbose "At least one virtual Disk is not in a healthy state"
                 }
             }
         }
         else {
-            Write-Verbose "No Storage SubSystem present. Cluster is not used for storage "
+            Write-Output "No Clustered Storage SubSystem present. Skipping Storage Health Test"
         } 
 
         If ($StoragePoolnotHealthy -or $virtualDisksnotHealthy -or ($SubSysNotHealthy -eq $true))
@@ -157,27 +157,27 @@ Function Invoke-WSUSUpdate
     $scanResults = Invoke-CimMethod -InputObject $sess -MethodName ScanForUpdates -Arguments @{SearchCriteria="IsInstalled=0";OnlineScan=$true}
 
     #display available Updates
-    If ($scanResults.Updates -gt 0)
+    If ($scanResults)
     {
         Write-Output "Required Updates found:"
         $scanResults.Updates | Select Title,KBArticleID
-    }
 
-
-    #Install Updates
-    If ($InstallRequired)
-    {
-        If (($scanResults.Updates).count -gt 0)
-        {
+            #Install Updates
+            If ($InstallRequired)
+            {
+                If (($scanResults.Updates).count -gt 0)
+                {
     
-            Write-Output "Installing Updates"
-            $scanResults = Invoke-CimMethod -InputObject $sess -MethodName ApplyApplicableUpdates
-        }
-        Else
-        {
-            Write-Warning "No applicaple Updates found"
-        }
+                    Write-Output "Installing Updates"
+                    $scanResults = Invoke-CimMethod -InputObject $sess -MethodName ApplyApplicableUpdates
+                }
+                Else
+                {
+                    Write-Warning "No applicaple Updates found"
+                }
+            }
     }
+
 }
 
 #region ####### Main routine #######
@@ -196,8 +196,8 @@ Foreach ($n in $ClusterNodeObjects)
 {
     $NodeProgress.Add("$($n.Name)","Not Started")
 }
-
 Write-Output $NodeProgress
+
 Foreach ($node in $ClusterNodeObjects)
 {
     $NodeName = $node.name
@@ -205,8 +205,37 @@ Foreach ($node in $ClusterNodeObjects)
     $NodeProgress.Set_Item("$nodename", "started")
     
     #Suspending node
+    Write-Output "Trying if we can suspend the node first"
+    $draincount = 0
+    While ($draincount -lt 5 -and $drainresult -eq $false)
+    {
+        try
+        {
+            Suspend-ClusterNode -Name $NodeName -Cluster $ClusterName -drain -WhatIf
+            $drainresult = $true
+        }
+        Catch
+        {
+           Write-Warning "Suspending Node: $NodeName not possible yet, waiting 5 Seconds for next retry..."
+        }
+        Finally
+        {
+            $draincount += 1
+            Start-Sleep -Seconds 5
+        }
+    }
+
     write-output "suspending Node: $NodeName"
-    Suspend-ClusterNode -Name $NodeName -Cluster $ClusterName -drain
+    Try
+    {
+        Suspend-ClusterNode -Name $NodeName -Cluster $ClusterName -drain
+    }
+    Catch
+    {
+        Write-Error "Unable to suspend Node: $NodeName . Aborting now!"
+        $NodeProgress
+        throw $_.Exception.Message
+    }
 
     #starting update process
     If ($SkipUpdates -ne $true)
@@ -216,7 +245,7 @@ Foreach ($node in $ClusterNodeObjects)
     }
 
     #Restart Node if required
-    If ((Test-PendingReboot -NodeName $NodeName) -or $ForceReboot -eq $true)
+    If (Test-PendingReboot -NodeName $NodeName)
     {
         Write-Output "Restarting Node: $NodeName"
         Restart-Computer -ComputerName $NodeName -Protocol WSMan -Wait -For PowerShell -Timeout $BootTimeOutSeconds
@@ -229,12 +258,19 @@ Foreach ($node in $ClusterNodeObjects)
         Resume-ClusterNode -Name $NodeName -Cluster $ClusterName
         #update Node State
 
-        Write-Output "Testing Storage Health"
-        While ((Test-StorageHealth -NodeName $NodeName -AllowRetry $true) -ne $true)
-        {
-            Write-Verbose "Storage is not yet in a healthy state, retry in 60 seconds"
-            Start-Sleep -Seconds 60
+        $StorageSubSystem = Get-StorageSubSystem -FriendlyName "Clustered Windows Storage*" -CimSession $NodeName -ErrorAction SilentlyContinue
+            If ($StorageSubSystem)
+            {
+            Write-Output "Testing Storage Health"
+            While ((Test-StorageHealth -NodeName $NodeName) -ne $true)
+            {
+                Write-Output "Storage is currently rebuilding or not n a healthy state, retry in 60 seconds"
+                Start-Sleep -Seconds 60
+            }
+            Write-Output "Storage Looks healthy now, sleeping for 30 seconds before continuing.."
+            Start-Sleep -Seconds 30
         }
+        
         $NodeProgress.Set_Item("$nodename", "completed")   
     }
     else 
