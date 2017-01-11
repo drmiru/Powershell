@@ -106,11 +106,13 @@ function New-LogEntry
       {
         $toLog = "{0} `$$<{1}><{2} {3}><thread={4}>" -f ($type + ":" + $message), ($Global:ScriptName + ":" + $component), (Get-Date -Format "MM-dd-yyyy"), (Get-Date -Format "HH:mm:ss.ffffff"), $pid
         $toLog | Out-File -Append -Encoding UTF8 -FilePath ("filesystem::{0}" -f $LogFile)
+        Write-Host $message
       }
       Else
       {
         $toLog = "{0} `$$<{1}><{2} {3}><thread={4}>" -f ($type + ":" + $message), ($Global:ScriptName + ":" + $component), (Get-Date -Format "MM-dd-yyyy"), (Get-Date -Format "HH:mm:ss.ffffff"), $pid
         $toLog | Out-File -Append -Encoding UTF8 -FilePath ("filesystem::{0}" -f $LogFile)
+        Write-Host $message
       }
 
       if ((Get-Item $LogFile).Length/1KB -gt $Global:MaxLogSizeInKB)
@@ -140,7 +142,7 @@ If ($GlobalPreScript)
     Try
     {
         New-LogEntry -message ("Invoking Global Prescript: $GlobalPreScript") -component "PreProcessing()" -type Info
-        Start-Process Powershell.exe -ArgumentList "-command $GlobalPreScript" -NoNewWindow -Wait
+        Invoke-Item $GlobalPreScript
     }
     Catch
     {
@@ -368,12 +370,6 @@ Write-Output $NodeProgress
 Foreach ($node in $ClusterNodeObjects)
 {
     $NodeName = $node.name
-    #Executing Node-PreScript
-    Invoke-Command -ComputerName $NodeName -ScriptBlock {
-        Start-Process Powershell.exe -ArgumentList "-command $USING:NodePreScript" -NoNewWindow -Wait
-    }
-    
-    
     #update Node State
     New-LogEntry -message ("Processing with Node: $NodeName") -component "Main()" -type Info
     $NodeProgress.Set_Item("$nodename", "started")
@@ -463,17 +459,8 @@ Foreach ($node in $ClusterNodeObjects)
         New-LogEntry -message ("Update process for Node: $NodeName has failed, Node did not come up again!") -component "Main()" -type Error
         Write-Error "Update process for Node: $NodeName has failed. Check logfile for more information"
     }
-
-    #Start Node Post-Script
-    Invoke-Command -ComputerName $NodeName -ScriptBlock {
-        Start-Process Powershell.exe -ArgumentList "-command $Using:NodePostScript" -NoNewWindow -Wait
-    }
     
 }
-
-#Start Node Post-Script
-Start-Process Powershell.exe -ArgumentList "-command $GlobalPostScript" -NoNewWindow -Wait
-
 
 New-LogEntry -message ("Cluster Update successfully completed") -component "Main()" -type Info    
 Write-Output "Cluster Update successfully completed"

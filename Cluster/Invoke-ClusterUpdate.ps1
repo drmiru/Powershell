@@ -50,8 +50,16 @@
    Size in KB for the Log, before a new is created
 
 .NOTES
-   Authors: Michael Rueefli aka drmiru (www.miru.ch)
-   Version: 1.0 (stable)
+    History
+    --------------------------------------------------
+    Version: 1.0.1
+    Date: 11.01.2017 
+    Changes: 
+        -Added fix for KB3213986 where Cluster Service is not started automatically on initial boot
+        -Fixed issue where Test-StorageHealth does not return true if no subsystem is present
+
+    Authors: Michael Rueefli aka drmiru (www.miru.ch)
+    Version: 1.0 (stable)
 #>
 
 [CmdletBinding(
@@ -179,6 +187,7 @@ Function Test-StorageHealth
         else {
             New-LogEntry -message ("No Clustered Storage SubSystem present. Skipping Storage Health Test") -component "Test-StorageHealth()" -type Info
             Write-Output "No Clustered Storage SubSystem present. Skipping Storage Health Test"
+            return $true
         } 
 
         If ($StoragePoolnotHealthy -or $virtualDisksnotHealthy -or ($SubSysNotHealthy -eq $true))
@@ -435,6 +444,17 @@ Foreach ($node in $ClusterNodeObjects)
         Write-Output "Restarting Node: $NodeName"
         Restart-Computer -ComputerName $NodeName -Protocol WSMan -Wait -For PowerShell -Timeout $BootTimeOutSeconds
     }
+
+    #region ---- Fix for KB3213986 where Cluster Service is not started after first reboot
+    Invoke-Command -ComputerName $NodeName -ScriptBlock {
+        If ((get-service ClusSvc -ErrorAction Ignore).Status -eq 'stopped')
+        {
+            New-LogEntry -message ("Starting Cluster Service on Node: $NodeName (fix for KB3213986)") -component "Main()" -type Info
+            Write-Output "Starting Cluster Service on Node: $NodeName (fix for KB3213986)"
+            Start-Service ClusSvc
+        }
+    }
+    #endregion ---- fix for KB3213986
 
     #Test if node is up again
     If ((Get-ClusterNode -Name $NodeName -Cluster $ClusterName).State -eq 'paused')
