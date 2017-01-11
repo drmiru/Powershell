@@ -130,8 +130,8 @@ function New-LogEntry
       if ((Get-Item $LogFile).Length/1KB -gt $Global:MaxLogSizeInKB)
       {
         $log = $LogFile
-        Remove-Item ($log.Replace(".log", ".lo_"))
-        Rename-Item $LogFile ($log.Replace(".log", ".lo_")) -Force
+        Remove-Item ($log.Replace(".log", ".lo_")) -ErrorAction Ignore
+        Rename-Item $LogFile ($log.Replace(".log", ".lo_")) -Force -ErrorAction Ignore
       }
   }
   Catch
