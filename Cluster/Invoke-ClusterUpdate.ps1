@@ -52,11 +52,12 @@
 .NOTES
     History
     --------------------------------------------------
-    Version: 1.0.1
+    Version: 1.0.2
     Date: 11.01.2017 
     Changes: 
         -Added fix for KB3213986 where Cluster Service is not started automatically on initial boot
         -Fixed issue where Test-StorageHealth does not return true if no subsystem is present
+        -Fixed error if pre-/post script variables where empty
 
     Authors: Michael Rueefli aka drmiru (www.miru.ch)
     Version: 1.0 (stable)
@@ -382,11 +383,15 @@ Write-Output $NodeProgress
 Foreach ($node in $ClusterNodeObjects)
 {
     $NodeName = $node.name
-    #Executing Node-PreScript
-    New-LogEntry -message ("Starting Node Post-Script $NodePreScript on node: $NodeName") -component "Main()" -type Info
-    Write-Verbose "Starting Node Post-Script $NodePreScript on node: $NodeName"
-    Invoke-Command -ComputerName $NodeName -ScriptBlock {
-        Start-Process Powershell.exe -ArgumentList "-command $USING:NodePreScript" -NoNewWindow -Wait
+
+    If ($NodePreScript)
+    {
+        #Executing Node-PreScript
+        New-LogEntry -message ("Starting Node Pre-Script $NodePreScript on node: $NodeName") -component "Main()" -type Info
+        Write-Verbose "Starting Node Pre-Script $NodePreScript on node: $NodeName"
+        Invoke-Command -ComputerName $NodeName -ScriptBlock {
+            Start-Process Powershell.exe -ArgumentList "-command $USING:NodePreScript" -NoNewWindow -Wait
+        }
     }
     
     
@@ -482,6 +487,7 @@ Foreach ($node in $ClusterNodeObjects)
         
         New-LogEntry -message ("Node: $NodeName Completed") -component "Main()" -type Info
         $NodeProgress.Set_Item("$nodename", "completed")   
+
     }
     else 
     {
@@ -492,18 +498,24 @@ Foreach ($node in $ClusterNodeObjects)
     }
 
     #Start Node Post-Script
-    New-LogEntry -message ("Starting Node Post-Script $NodePostScript on node: $NodeName") -component "Main()" -type Info
-    Write-Verbose "Starting Node Post-Script $NodePostScript on node: $NodeName"
-    Invoke-Command -ComputerName $NodeName -ScriptBlock {
-        Start-Process Powershell.exe -ArgumentList "-command $Using:NodePostScript" -NoNewWindow -Wait
+    If ($NodePostScript)
+    {
+        New-LogEntry -message ("Starting Node Post-Script $NodePostScript on node: $NodeName") -component "Main()" -type Info
+        Write-Verbose "Starting Node Post-Script $NodePostScript on node: $NodeName"
+        Invoke-Command -ComputerName $NodeName -ScriptBlock {
+            Start-Process Powershell.exe -ArgumentList "-command $Using:NodePostScript" -NoNewWindow -Wait
+        }
     }
     
 }
 
 #Start Global Post-Script
-New-LogEntry -message ("Starting Global Post-Script $GlobalPostScript") -component "Main()" -type Info
-Write-Verbose "Starting Node Post-Script $GlobalPostScript"
-Start-Process Powershell.exe -ArgumentList "-command $GlobalPostScript" -NoNewWindow -Wait
+If ($GlobalPostScript)
+{
+    New-LogEntry -message ("Starting Global Post-Script $GlobalPostScript") -component "Main()" -type Info
+    Write-Verbose "Starting Node Post-Script $GlobalPostScript"
+    Start-Process Powershell.exe -ArgumentList "-command $GlobalPostScript" -NoNewWindow -Wait
+}
 
 
 New-LogEntry -message ("Cluster Update successfully completed") -component "Main()" -type Info    
