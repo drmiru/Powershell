@@ -52,12 +52,13 @@
 .NOTES
     History
     --------------------------------------------------
-    Version: 1.0.2
+    Version: 1.0.3
     Date: 11.01.2017 
     Changes: 
         -Added fix for KB3213986 where Cluster Service is not started automatically on initial boot
         -Fixed issue where Test-StorageHealth does not return true if no subsystem is present
         -Fixed error if pre-/post script variables where empty
+        -Fixed Error, when no storage pools are present
 
     Authors: Michael Rueefli aka drmiru (www.miru.ch)
     Version: 1.0 (stable)
@@ -162,7 +163,7 @@ Function Test-StorageHealth
             }
             
             
-            $StoragePools = $StorageSubSystem | Get-StoragePool -IsPrimordial $false
+            $StoragePools = $StorageSubSystem | Get-StoragePool -IsPrimordial $false -ErrorAction SilentlyContinue
             If ($StoragePools)
             {
                 Write-verbose "Storage Pools present"
@@ -177,7 +178,7 @@ Function Test-StorageHealth
                 }
 
                 #Check Virtual Disk Health
-                $virtualDisksnotHealthy = $StoragePools | Get-VirtualDisk | Where-Object {$_.HealthStatus -ne 'Healthy'}
+                $virtualDisksnotHealthy = $StoragePools | Get-VirtualDisk -ErrorAction SilentlyContinue | Where-Object {$_.HealthStatus -ne 'Healthy'}
                 If ($virtualDisksnotHealthy)
                 {
                     New-LogEntry -message ("At least one virtual Disk is not in a healthy state") -component "Test-StorageHealth()" -type Verbose
