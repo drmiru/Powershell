@@ -299,6 +299,7 @@ If (!(Get-WindowsFeature RSAT-Clustering-PowerShell))
 {
     New-LogEntry -message ("Failover Clustering Module not present, install it first 'Add-WindowsFeature RSAT-Clustering-PowerShell'") -component "PreProcessing()" -type Error
     Write-Error "Failover Clustering Module not present, install it first 'Add-WindowsFeature RSAT-Clustering-PowerShell'"
+    break
 }
 
 New-LogEntry -message ("Cluster Update Started") -component "PreProcessing()" -type Info
@@ -354,12 +355,13 @@ Foreach ($node in $ClusterNodeObjects)
     }  
 }
 
-#Search for nodes not ready
+#Check if all nodes are up
 New-LogEntry -message ("Searching For Nodes not up") -component "Main()" -type Info
 $ClusterNodesNotReady = $ClusterNodeObjects | where {$_.State -ne 'up'}
 If ($ClusterNodesNotReady)
 {
     New-LogEntry -message ("Found $($ClusterNodesNotReady.Count) nodes not in UP state, aborting") -component "Main()" -type Error
+    New-LogEntry -message ("Cluster Nodes not up: " + ($ClusterNodesNotReady -join ',')) -component "Main()" -type Error
     throw "Not all Nodes seem to be online, aborting"
 }
 
@@ -452,14 +454,18 @@ Foreach ($node in $ClusterNodeObjects)
     }
 
     #region ---- Fix for KB3213986 where Cluster Service is not started after first reboot
-    Invoke-Command -ComputerName $NodeName -ScriptBlock {
+    $ClusSvcDown = Invoke-Command -ComputerName $NodeName -ScriptBlock {
         If ((get-service ClusSvc -ErrorAction Ignore).Status -eq 'stopped')
         {
-            New-LogEntry -message ("Starting Cluster Service on Node: $NodeName (fix for KB3213986)") -component "Main()" -type Info
-            Write-Output "Starting Cluster Service on Node: $NodeName (fix for KB3213986)"
             Start-Service ClusSvc
             Start-Sleep -Seconds 10
+            return $true
         }
+    }
+    If ($ClusSvcDown)
+    {
+            New-LogEntry -message ("Cluster Service on Node: $NodeName had to be started (fix for KB3213986)") -component "Main()" -type Info
+            Write-Output "Cluster Service on Node: $NodeName had to be started (fix for KB3213986)"
     }
     #endregion ---- fix for KB3213986
 
