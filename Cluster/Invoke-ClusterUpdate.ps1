@@ -128,7 +128,7 @@ function New-LogEntry
         $toLog | Out-File -Append -Encoding UTF8 -FilePath ("filesystem::{0}" -f $LogFile)
       }
 
-      if ((Get-Item $LogFile).Length/1KB -gt $Global:MaxLogSizeInKB)
+      if ((Get-Item $LogFile).Length/1KB -gt $MaxLogSizeInKB)
       {
         $log = $LogFile
         Remove-Item ($log.Replace(".log", ".lo_")) -ErrorAction Ignore
@@ -458,6 +458,7 @@ Foreach ($node in $ClusterNodeObjects)
             New-LogEntry -message ("Starting Cluster Service on Node: $NodeName (fix for KB3213986)") -component "Main()" -type Info
             Write-Output "Starting Cluster Service on Node: $NodeName (fix for KB3213986)"
             Start-Service ClusSvc
+            Start-Sleep -Seconds 10
         }
     }
     #endregion ---- fix for KB3213986
