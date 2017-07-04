@@ -49,10 +49,40 @@
 .PARAMETER MaxLogSizeInKB
    Size in KB for the Log, before a new is created
 
+.PARAMETER PackagesToRemove
+   Installed Windows Packages to be removed, prior of update installation
+
+.PARAMETER IncludeHPSUM
+   Installed Windows Packages to be removed, prior of update installation
+
 .NOTES
     History
     --------------------------------------------------
-    Version: 1.0.3
+    Version 1.3.0
+    Date: 30.06.2017
+    Changed: 
+         -Added Function to check for missing updates before draining node
+    
+    Version 1.2.1
+    Date: 23.03.2017
+    Changes:
+        -Added function to remove a Windows Package prior Update Installation
+        -Fixed issue where draining the node did not wait for completion
+    
+    Version 1.1.2
+    Date: 13.02.2017
+    Changes:
+        -Changed Logfile / Path behavior. Logfile is now automaically created in S:\Logs\ClusterUpdate\FPPV7204\$ClusterName
+        -Added SCOM Maintenance functionality
+    
+    Version: 1.1    
+    Date: 13.01.2017
+    Changes:
+        -Abort if node suspend test fails
+        -Improved logging
+        -throw exception and abort if a node did not come up again
+
+    Version 1.0.3
     Date: 11.01.2017 
     Changes: 
         -Added fix for KB3213986 where Cluster Service is not started automatically on initial boot
@@ -88,15 +118,28 @@ param(
     [String]$GlobalPostScript,
 
     [Parameter(Mandatory=$false)]
-    [String]$LogFile="C:\Windows\Logs\ClusterUpdate.log",
+    [String]$LogPath="$ENV:Temp\ClusterUpdate",
 
     [Parameter(Mandatory=$false)]
-    [Int]$MaxLogSizeInKB = 10240
+    [Int]$MaxLogSizeInKB = 10240,
+
+        [Parameter(Mandatory=$false)]
+    [string[]]$PackagesToRemove    
 )
 
 #region Globals
 $ErrorActionPreference = "stop"
 $Global:ScriptName = $MyInvocation.MyCommand.name
+$GLOBAL:LogFilePath = Join-Path $LogPath $ClusterName
+$Global:LogFile = Join-Path $LogFilePath  "$Clustername.log"
+
+#Create Logfolder if not present
+If (!(Test-Path LogFilePath))
+{
+    New-Item -path $LogFilePath -ItemType Directory -Force
+}
+
+
 #endregion Globals
 
 #region functions
@@ -114,6 +157,7 @@ function New-LogEntry
   [ValidateSet('Info','Warning','Verbose','Error')]
   [string]$type 
   )
+
 
   Try
   {
@@ -140,7 +184,7 @@ function New-LogEntry
     Write-Warning "Could not log to File: $($_.InvocationInfo.myCommand.Name): $($_.Exception.Message)"
   }
 } 
-
+    
 Function Test-StorageHealth
 {
     param(
@@ -232,6 +276,88 @@ Function Test-PendingReboot
     Return $RebootRequired
 }
 
+Function Remove-Package
+{
+    Param(
+    [Parameter(mandatory=$true)]
+    [string]$ComputerName,
+
+    [Parameter(mandatory=$true)]
+    [string]$PackageName
+    )
+
+    $ErrorActionPreference = 'stop'
+    Try
+    {
+        $PackageExists = Invoke-Command -ComputerName  $ComputerName -Scriptblock {Get-WindowsPackage -Online | Where {$_.PackageName -match $USING:PackageName}}
+        If ($PackageExists.count -gt 1)
+        {
+            New-LogEntry -message ("Multiple packages found matching Name: $PackageName . aborting uninstallation") -component "Remove-Package()" -type Warning
+            Write-warning "Multiple packages found matching Name: $PackageName . aborting uninstallation"
+        }
+    }
+    Catch
+    {
+        New-LogEntry -message ("No package found matching Name: $PackageName") -component "Remove-Package()" -type Warning
+        Write-warning "No package found matching Name: $PackageName"
+    }
+
+    If ($PackageExists)
+    {
+        Try
+        {
+            $PackageName = $PackageExists.PackageName
+            $result = Invoke-Command $ComputerName -Scriptblock {Remove-WindowsPackage -Online -PackageName $USING:PackageName -NoRestart}
+            New-LogEntry -message ("Removed Package: $($PackageExists.PackageName)") -component "Remove-Package()" -type Info
+            Write-Verbose "Removed Package: $($PackageExists.PackageName)"
+        }
+        Catch
+        {
+            New-LogEntry -message ("Error While Uninstalling Package: $($PackageExists.PackageName) : $($_.InvocationInfo.myCommand.Name): $($_.Exception.Message)") -component "Remove-Package()" -type Error
+            Write-warning "Error While Uninstalling Package: $($PackageExists.PackageName)"
+        }
+    }
+    Else
+    {
+        New-LogEntry -message ("No package found matching Name: $PackageName") -component "Remove-Package()" -type Warning
+        Write-warning "No package found matching Name: $PackageName"
+    }
+}
+
+Function Get-AvailableUpdates
+{
+   param(
+    [Parameter(mandatory=$true)]
+    [string]$ServerName
+   )
+   
+   #Search Updates
+    Try
+    {
+        $sess = New-CimInstance -Namespace root/Microsoft/Windows/WindowsUpdate -ClassName MSFT_WUOperationsSession -CimSession $ServerName
+        $scanResults = Invoke-CimMethod -InputObject $sess -MethodName ScanForUpdates -Arguments @{SearchCriteria="IsInstalled=0";OnlineScan=$true}
+    }
+    Catch
+    {
+        New-LogEntry -message ("$($_.InvocationInfo.myCommand.Name): $($_.Exception.Message)") -component "Invoke-WSUSUpdate()" -type Info
+        Write-Warning "$($_.InvocationInfo.myCommand.Name): $($_.Exception.Message)"
+    }
+
+    #display available Updates
+    If ($scanResults.Updates.count -gt 0)
+    {
+        New-LogEntry -message ("Required Updates found:") -component "Invoke-WSUSUpdate()" -type Info
+        $scanResults.Updates | Foreach {New-LogEntry -message ("$($_.KBArticleID) , $($_.Title)") -component "Invoke-WSUSUpdate()" -type Info}
+        Write-Output "Required Updates found:"
+        $scanResults.Updates | Select Title,KBArticleID
+        return $true
+    } 
+    Else
+    {
+        return $false
+    }
+}
+
 Function Invoke-WSUSUpdate
 {
     param(
@@ -241,7 +367,6 @@ Function Invoke-WSUSUpdate
     [Parameter(mandatory=$false)]
     [bool]$InstallRequired=$false
     )
-
 
     #Search Updates
     Try
@@ -316,6 +441,8 @@ If ($GlobalPreScript)
     }
 }
 
+#Resolve FQDN of Cluster
+$ClusterFQDN = ([system.net.dns]::GetHostByName($ClusterName)).HostName
 
 #Get Clusternodes
 New-LogEntry -message ("Getting Cluster Nodes of Cluster: $ClusterName") -component "Main()" -type Info
@@ -335,6 +462,10 @@ New-LogEntry -message ("Nodes found: $NodeCount") -component "Main()" -type Info
 #Trying to connect to each Node using CIM
 Foreach ($node in $ClusterNodeObjects)
 {
+    #Resolve FQDN of Node
+    $NodeFQDN = ([system.net.dns]::GetHostByName($NodeName)).HostName
+
+    
     Try
     {
         $s = New-CimSession -ComputerName $node.name
@@ -383,9 +514,11 @@ Foreach ($n in $ClusterNodeObjects)
 }
 Write-Output $NodeProgress
 
+
 Foreach ($node in $ClusterNodeObjects)
 {
     $NodeName = $node.name
+    $NodeFQDN = [system.net.dns]::GetHostByName($NodeName).HostName
 
     If ($NodePreScript)
     {
@@ -402,109 +535,144 @@ Foreach ($node in $ClusterNodeObjects)
     New-LogEntry -message ("Processing with Node: $NodeName") -component "Main()" -type Info
     $NodeProgress.Set_Item("$nodename", "started")
     
-    #Suspending node
-    New-LogEntry -message ("Simulating to suspend Node: $NodeName") -component "Main()" -type Info
-    Write-Output "Trying if we can suspend the node first"
-    $draincount = 0
-    While ($draincount -lt 5 -and $drainresult -eq $false)
+    #Check if there are any updates
+    $updateresult = Get-AvailableUpdates -ServerName $NodeName
+
+    If ($updateresult -eq $true)
     {
-        try
+        #Suspending node
+        New-LogEntry -message ("Simulating to suspend Node: $NodeName") -component "Main()" -type Info
+        Write-Output "Trying if we can suspend the node first"
+        $draincount = 0
+        While ($draincount -lt 5 -and $drainresult -eq $false)
         {
-            Suspend-ClusterNode -Name $NodeName -Cluster $ClusterName -drain -WhatIf
-            $drainresult = $true
+            try
+            {
+                Suspend-ClusterNode -Name $NodeName -Cluster $ClusterName -drain -WhatIf
+                $drainresult = $true
+            }
+            Catch
+            {
+               New-LogEntry -message ("Suspending Node: $NodeName not possible yet, waiting 5 Seconds for next retry") -component "Main()" -type Warning
+               Write-Warning "Suspending Node: $NodeName not possible yet, waiting 5 Seconds for next retry..."
+            }
+            Finally
+            {
+                $draincount += 1
+                Start-Sleep -Seconds 5
+            }
+        }
+    
+        #If the drain sumulation failed after some retries, we stop here..
+        If ($drainresult -eq $false)
+        {
+            New-LogEntry -message ("Suspending Node: $NodeName not possible, aborting") -component "Main()" -type Error
+            throw "Suspending Node: $NodeName not possible, aborting"
+        }
+              
+        write-output "suspending Node: $NodeName"
+        Try
+        {
+            New-LogEntry -message ("Suspending Node: $NodeName , drain roles") -component "Main()" -type Info
+            Suspend-ClusterNode -Name $NodeName -Cluster $ClusterName -drain -Wait
         }
         Catch
         {
-           New-LogEntry -message ("Suspending Node: $NodeName not possible yet, waiting 5 Seconds for next retry") -component "Main()" -type Warning
-           Write-Warning "Suspending Node: $NodeName not possible yet, waiting 5 Seconds for next retry..."
+            New-LogEntry -message ("Unable to suspend Node: $NodeName . Aborting now!") -component "Main()" -type Error
+            Write-Error "Unable to suspend Node: $NodeName . Aborting now!"
+            $NodeProgress
+            throw $_.Exception.Message
         }
-        Finally
+
+
+        #Remove Packages first
+        Foreach ($pname in $PackagesToRemove)
         {
-            $draincount += 1
-            Start-Sleep -Seconds 5
+            Write-Output "Trying to remove Package: $pname"
+            Remove-Package -ComputerName $NodeName -PackageName $pname
         }
-    }
 
-    write-output "suspending Node: $NodeName"
-    Try
-    {
-        New-LogEntry -message ("Suspending Node: $NodeName , drain roles") -component "Main()" -type Info
-        Suspend-ClusterNode -Name $NodeName -Cluster $ClusterName -drain
-    }
-    Catch
-    {
-        New-LogEntry -message ("Unable to suspend Node: $NodeName . Aborting now!") -component "Main()" -type Error
-        Write-Error "Unable to suspend Node: $NodeName . Aborting now!"
-        $NodeProgress
-        throw $_.Exception.Message
-    }
-
-    #starting update process
-    New-LogEntry -message ("Invoking WU Run on Node: $NodeName") -component "Main()" -type Info
-    Write-Output "Invoking WU Run on Node: $NodeName"
-    Invoke-WSUSUpdate -ServerName $NodeName -InstallRequired $true
-    
-
-    #Restart Node if required
-    If (Test-PendingReboot -NodeName $NodeName)
-    {
-        New-LogEntry -message ("Node: $NodeName has a pending reboot entry, initiating restart") -component "Main()" -type Info
-        Write-Output "Restarting Node: $NodeName"
-        Restart-Computer -ComputerName $NodeName -Protocol WSMan -Wait -For PowerShell -Timeout $BootTimeOutSeconds
-    }
-
-    #region ---- Fix for KB3213986 where Cluster Service is not started after first reboot
-    $ClusSvcDown = Invoke-Command -ComputerName $NodeName -ScriptBlock {
-        If ((get-service ClusSvc -ErrorAction Ignore).Status -eq 'stopped')
+        #starting update process
+        New-LogEntry -message ("Invoking Update Run on Node: $NodeName") -component "Main()" -type Info
+        Write-Output "Invoking Update Run on Node: $NodeName"
+        Invoke-WSUSUpdate -ServerName $NodeName -InstallRequired $true
+            
+        #Restart Node if required
+        If (Test-PendingReboot -NodeName $NodeName)
         {
-            Start-Service ClusSvc
-            Start-Sleep -Seconds 10
-            return $true
+            New-LogEntry -message ("Node: $NodeName has a pending reboot entry, initiating restart") -component "Main()" -type Info
+            Write-Output "Restarting Node: $NodeName"
+            Restart-Computer -ComputerName $NodeName -Protocol WSMan -Wait -For WinRM -Timeout $BootTimeOutSeconds -Force
         }
-    }
-    If ($ClusSvcDown)
-    {
-            New-LogEntry -message ("Cluster Service on Node: $NodeName had to be started (fix for KB3213986)") -component "Main()" -type Info
-            Write-Output "Cluster Service on Node: $NodeName had to be started (fix for KB3213986)"
-    }
-    #endregion ---- fix for KB3213986
 
-    #Test if node is up again
-    If ((Get-ClusterNode -Name $NodeName -Cluster $ClusterName).State -eq 'paused')
-    {
-        New-LogEntry -message ("Resuming Node: $NodeName") -component "Main()" -type Info
-        Write-Output "Resuming Node: $NodeName"
-        Resume-ClusterNode -Name $NodeName -Cluster $ClusterName
-        #update Node State
-
-        $StorageSubSystem = Get-StorageSubSystem -FriendlyName "Clustered Windows Storage*" -CimSession $NodeName -ErrorAction SilentlyContinue
-        If ($StorageSubSystem)
-        {
-            New-LogEntry -message ("Testing Storage Health") -component "Main()" -type Info
-            Write-Output "Testing Storage Health"
-            While ((Test-StorageHealth -NodeName $NodeName) -ne $true)
+        #region ---- Fix for KB3213986 where Cluster Service is not started after first reboot
+        $ClusSvcDown = Invoke-Command -ComputerName $NodeName -ScriptBlock {
+            If ((get-service ClusSvc -ErrorAction Ignore).Status -eq 'stopped')
             {
-                New-LogEntry -message ("Storage is currently rebuilding or not n a healthy state, retry in 60 seconds") -component "Main()" -type Warning
-                Write-Output "Storage is currently rebuilding or not n a healthy state, retry in 60 seconds"
-                Start-Sleep -Seconds 60
+                Start-Service ClusSvc
+                Start-Sleep -Seconds 30
+                return $true
             }
-            New-LogEntry -message ("Storage Looks healthy now, sleeping for 30 seconds before continuing") -component "Main()" -type Info
-            Write-Output "Storage Looks healthy now, sleeping for 30 seconds before continuing.."
-            Start-Sleep -Seconds 30
+        }
+        If ($ClusSvcDown)
+        {
+                New-LogEntry -message ("Cluster Service on Node: $NodeName had to be started (fix for KB3213986)") -component "Main()" -type Info
+                Write-Output "Cluster Service on Node: $NodeName had to be started (fix for KB3213986)"
+        }
+        #endregion ---- fix for KB3213986
+
+        #Test if node is up again
+        $rt = 0
+        Do {
+               $rt += 1
+               New-LogEntry -message ("Cluster Service on Node: $NodeName is not up yet, retrying in 10s") -component "Main()" -type Info
+               Write-Output "Cluster Service on Node: $NodeName is not up yet, retrying in 10s"
+               Start-Sleep -Seconds 10
+        }
+        While ((Get-ClusterNode -Name $NodeName -Cluster $ClusterName).State -ne 'Paused' -and $rt -lt 5)
+     
+        If ((Get-ClusterNode -Name $NodeName -Cluster $ClusterName).State -eq 'paused')
+        {
+            New-LogEntry -message ("Resuming Node: $NodeName") -component "Main()" -type Info
+            Write-Output "Resuming Node: $NodeName"
+            Resume-ClusterNode -Name $NodeName -Cluster $ClusterName
+            #update Node State
+
+            $StorageSubSystem = Get-StorageSubSystem -FriendlyName "Clustered Windows Storage*" -CimSession $NodeName -ErrorAction SilentlyContinue
+            If ($StorageSubSystem)
+            {
+                New-LogEntry -message ("Testing Storage Health") -component "Main()" -type Info
+                Write-Output "Testing Storage Health"
+                While ((Test-StorageHealth -NodeName $NodeName) -ne $true)
+                {
+                    New-LogEntry -message ("Storage is currently rebuilding or not n a healthy state, retry in 60 seconds") -component "Main()" -type Warning
+                    Write-Output "Storage is currently rebuilding or not n a healthy state, retry in 60 seconds"
+                    Start-Sleep -Seconds 60
+                }
+                New-LogEntry -message ("Storage Looks healthy now, sleeping for 30 seconds before continuing") -component "Main()" -type Info
+                Write-Output "Storage Looks healthy now, sleeping for 30 seconds before continuing.."
+                Start-Sleep -Seconds 30
+            }
         }
         
         New-LogEntry -message ("Node: $NodeName Completed") -component "Main()" -type Info
         $NodeProgress.Set_Item("$nodename", "completed")   
-
+        
+        else 
+        {
+            #update Node State
+            $NodeProgress.Set_Item("$NodeName", "failed")
+            New-LogEntry -message ("Update process for Node: $NodeName has failed, Node did not come up again!") -component "Main()" -type Error
+            Write-Error "Update process for Node: $NodeName has failed. Check logfile and Eventlogs for more information"
+            $NodeProgress
+            throw "Update process for Node: $NodeName has failed. Check logfile: $LogFile and Eventlogs for more information"
+        }
     }
-    else 
+    Else
     {
-        #update Node State
-        $NodeProgress.Set_Item("$NodeName", "failed")
-        New-LogEntry -message ("Update process for Node: $NodeName has failed, Node did not come up again!") -component "Main()" -type Error
-        Write-Error "Update process for Node: $NodeName has failed. Check logfile for more information"
+        Write-Output "Skipping Node: $NodeName as no required updates where found"
+        New-LogEntry -message ("Skipping Node: $NodeName as no required updates where found") -component "Main()" -type Info
     }
-
     #Start Node Post-Script
     If ($NodePostScript)
     {
@@ -513,8 +681,7 @@ Foreach ($node in $ClusterNodeObjects)
         Invoke-Command -ComputerName $NodeName -ScriptBlock {
             Start-Process Powershell.exe -ArgumentList "-command $Using:NodePostScript" -NoNewWindow -Wait
         }
-    }
-    
+    }       
 }
 
 #Start Global Post-Script
@@ -525,8 +692,7 @@ If ($GlobalPostScript)
     Start-Process Powershell.exe -ArgumentList "-command $GlobalPostScript" -NoNewWindow -Wait
 }
 
-
-New-LogEntry -message ("Cluster Update successfully completed") -component "Main()" -type Info    
-Write-Output "Cluster Update successfully completed"
+New-LogEntry -message ("Cluster Update for Cluster: $ClusterName successfully completed") -component "Main()" -type Info    
+Write-Output "Cluster Update for Cluster: $ClusterName successfully completed"
 $NodeProgress
 #endregion
