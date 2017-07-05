@@ -653,11 +653,11 @@ Foreach ($node in $ClusterNodeObjects)
                 Write-Output "Storage Looks healthy now, sleeping for 30 seconds before continuing.."
                 Start-Sleep -Seconds 30
             }
-        }
-        
-        New-LogEntry -message ("Node: $NodeName Completed") -component "Main()" -type Info
-        $NodeProgress.Set_Item("$nodename", "completed")   
-        
+            
+            New-LogEntry -message ("Node: $NodeName Completed") -component "Main()" -type Info
+            $NodeProgress.Set_Item("$nodename", "completed")  
+
+        }     
         else 
         {
             #update Node State
